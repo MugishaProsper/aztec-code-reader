@@ -2,44 +2,78 @@ import os
 import cv2
 import csv
 import argparse
+import json
+import logging
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
+from datetime import datetime
 import numpy as np
 from pyzbar import pyzbar
 
-def enhance_for_aztec(image: np.ndarray) -> List[np.ndarray]:
-    """Preprocessing optimized for Aztec codes"""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
-    versions = [gray]
+class AztecProcessor:
+    """Enhanced Aztec code processor with configurable parameters"""
+    
+    def __init__(self, clahe_clip_limit: float = 4.0, clahe_grid_size: Tuple[int, int] = (8, 8)):
+        self.clahe_clip_limit = clahe_clip_limit
+        self.clahe_grid_size = clahe_grid_size
+        self.logger = logging.getLogger(__name__)
+    
+    def enhance_for_aztec(self, image: np.ndarray) -> List[np.ndarray]:
+        """Preprocessing optimized for Aztec codes with enhanced techniques"""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+        versions = [gray]
 
-    # 1. CLAHE - boosts local contrast
-    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
-    versions.append(clahe.apply(gray))
+        # 1. CLAHE - boosts local contrast
+        clahe = cv2.createCLAHE(clipLimit=self.clahe_clip_limit, tileGridSize=self.clahe_grid_size)
+        versions.append(clahe.apply(gray))
 
-    # 2. Otsu binarization
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    versions.append(thresh)
+        # 2. Otsu binarization
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        versions.append(thresh)
 
-    # 3. Inverted threshold
-    _, inv_thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    versions.append(inv_thresh)
+        # 3. Inverted threshold
+        _, inv_thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        versions.append(inv_thresh)
 
-    # 4. Morphological closing (fill gaps)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
-    closed = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
-    versions.append(closed)
+        # 4. Morphological closing (fill gaps)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
+        closed = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
+        versions.append(closed)
 
-    # 5. Sharpening
-    blur = cv2.GaussianBlur(gray, (0,0), 2)
-    sharp = cv2.addWeighted(gray, 1.8, blur, -0.8, 0)
-    versions.append(sharp)
+        # 5. Sharpening
+        blur = cv2.GaussianBlur(gray, (0,0), 2)
+        sharp = cv2.addWeighted(gray, 1.8, blur, -0.8, 0)
+        versions.append(sharp)
 
-    # 6. High-pass filter (edge enhancement)
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-    laplacian = cv2.convertScaleAbs(laplacian)
-    versions.append(laplacian)
+        # 6. High-pass filter (edge enhancement)
+        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+        laplacian = cv2.convertScaleAbs(laplacian)
+        versions.append(laplacian)
 
-    return versions
+        # 7. Adaptive threshold (new enhancement)
+        adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                       cv2.THRESH_BINARY, 11, 2)
+        versions.append(adaptive)
+
+        # 8. Bilateral filter for noise reduction while preserving edges
+        bilateral = cv2.bilateralFilter(gray, 9, 75, 75)
+        versions.append(bilateral)
+
+        return versions
+
+    def validate_aztec_data(self, data: str) -> bool:
+        """Validate if decoded data looks like valid Aztec content"""
+        if not data or len(data) < 3:
+            return False
+        
+        # Check for common patterns in valid Aztec codes
+        valid_patterns = [
+            data.isalnum(),  # Alphanumeric
+            any(char in data for char in ['/', ':', '=', '+', '-']),  # URL/Base64 patterns
+            data.startswith(('http', 'https', 'ftp')),  # URLs
+        ]
+        
+        return any(valid_patterns)
 
 def decode_aztec_codes(image: np.ndarray) -> List[Dict]:
     """Decode only Aztec codes"""
